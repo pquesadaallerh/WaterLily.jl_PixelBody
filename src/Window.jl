@@ -1,15 +1,14 @@
 """
     Scale(inS, inE, outS, outE, r)
 
-  - `inS::Float64`: First value of input map range
-  - `inE::Float64`: Last value of input map range
-  - `outS::Float64`: First value of output map range (i.e. pixel map)
-  - `outE::Float64`: Last value of output map range (i.e. pixel map)
+  - `inS::Float64`: First value of input map range (i.e. physical coordinates)
+  - `inE::Float64`: Last value of input map range (i.e. physical coordinates)
+  - `outS::Float64`: First value of output map range (i.e. pixel coordinates)
+  - `outE::Float64`: Last value of output map range (i.e. pixel coordinates)
   - `r::Float64`: Scaling factor (input to output conversion factor)
 
 Helper struct used together with 'Window' to map between two coordinate systems (i.e. a logical/physical scale 
-into a pixel scale). Function "out" converts from logical into pixel coordinates, while "in" converts
-from pixel coordinates into logical/physical coordinates.
+into a pixel scale).
 """
 
 mutable struct Scale
@@ -74,7 +73,7 @@ mutable struct Window
     end
 end
 
-# Default window dimensions # TODO: Not sure how to pass window full size as defaults.
+# Default window dimensions # TODO: Not sure how to pass window full size as defaults (or if we want to).
 # The 700 was copied from the LilyPad.pde file from LilyPad
 const DEFAULT_WIDTH = 700
 const DEFAULT_HEIGHT = 700
@@ -91,16 +90,16 @@ Window(n0::Float64, m0::Float64, dn::Float64, dm::Float64) = Window(n0, m0, dn, 
 #TODO: Constructor with shift in starting indices to allign with cell centers
 
 # Window coordinate conversion methods (round when converting to pixel domain)
-ix(w::Window, i::Int) = convert_pixel_to_logical(w.x, Float64(i))
-iy(w::Window, i::Int) = convert_pixel_to_logical(w.y, Float64(i))
-px(w::Window, i::Float64) = Int(round(convert_logical_to_pixel(w.x, i)))
-py(w::Window, i::Float64) = Int(round(convert_logical_to_pixel(w.y, i)))
+ix(w::Window, i) = convert_pixel_to_logical(w.x, Float64(i))
+iy(w::Window, i) = convert_pixel_to_logical(w.y, Float64(i))
+px(w::Window, i) = Int(round(convert_logical_to_pixel(w.x, Float64(i))))
+py(w::Window, i) = Int(round(convert_logical_to_pixel(w.y, Float64(i))))
 
 # Unit conversion methods based on scaling factor
-idx(w::Window, i::Int) = Float64(i) / w.x.r
-idy(w::Window, i::Int) = Float64(i) / w.y.r
-pdx(w::Window, i::Float64) = Int(round(w.x.r * i))
-pdy(w::Window, i::Float64) = Int(round(w.y.r * i))
+idx(w::Window, i) = Float64(i) / w.x.r
+idy(w::Window, i) = Float64(i) / w.y.r
+pdx(w::Window, i) = Int(round(w.x.r * Float64(i)))
+pdy(w::Window, i) = Int(round(w.y.r * Float64(i)))
 
 # Method to check if pixel coordinates inside window
 inside(w::Window, x::Int, y::Int) = (x ≥ w.x0) && (x ≤ w.x0 + w.dx) && (y ≥ w.y0) && (y ≤ w.y0 + w.dy)

@@ -3,8 +3,8 @@ using Plots
 
 cID = "AirfoilPixelBody"
 
-#TODO: TEMP testing of PixelBody functionality
-body = PixelBody(image_to_field("test/resources/airfoil.png"))
+# TODO: TEMP testing of PixelBody functionality
+body = PixelBody(image_to_field("test/resources/airfoil.png")) # n=450, m = 800
 img = test_pixel_body(body)
 heatmap(img[:,:,1], aspect_ratio=:equal, color=:grays)
 

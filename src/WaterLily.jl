@@ -26,6 +26,12 @@ export AbstractBody,measure_sdf!
 include("AutoBody.jl")
 export AutoBody,Bodies,measure,sdf,+,-
 
+include("Window.jl")
+export Scale, Window
+
+include("PixelBody.jl")
+export PixelBody, Field, create_example_body, test_pixel_body, image_to_field, smooth_field
+
 include("Metrics.jl")
 
 abstract type AbstractSimulation end

@@ -1,24 +1,18 @@
 using WaterLily
 using Plots
 
-cID = "SimplePixelBody"
+cID = "2DCircle"
 
-#TODO: TEMP testing of PixelBody functionality
-# body = create_example_body()
-# img = test_pixel_body(body)
-# heatmap(img[:,:,1], aspect_ratio=:equal, color=:grays)
-
-function simple_body(Re=250,U=1,mem=Array)
-    body = create_example_body()  # 128 x 128
-    n = body.n ; m = body.m
-    characteristic_length = m/10 # TODO: Arbitrary atm, implement a method to estimate from image
-    Simulation((n,m), (U,0), characteristic_length; ν=U*characteristic_length/Re, body, mem)
+function circle(n,m;Re=250,U=1,mem=Array)
+    radius, center = m/8, m/2
+    body = AutoBody((x,t)->√sum(abs2, x .- center) - radius)
+    Simulation((n,m), (U,0), radius; ν=U*radius/Re, body, mem)
 end
 
 # Initialize the simulation with GPU Array
 # using CUDA
-# sim = simple_body(mem=CuArray);
-sim = simple_body()
+# sim = circle(3*2^6,2^7; mem=CuArray);
+sim = circle(3*2^6,2^7);
 
 WaterLily.logger(cID) # Log the residual of pressure solver
 #= NOTE: 
