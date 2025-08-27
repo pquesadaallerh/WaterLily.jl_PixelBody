@@ -602,24 +602,33 @@ def stop_display_processes():
             print(f"[display] Failed to stop process {pid}: {e}")
     return stopped
 
-
-def safe_unlink_windows(path: Path, max_retries: int = 3, delay: float = 0.5):
-    """
-    Simplified unlink - display process will be restarted so no need for complex retry logic.
-    """
-    for attempt in range(max_retries):
-        try:
-            if path.exists() or path.is_symlink():
-                path.unlink()
-            return True
-        except PermissionError as e:
-            if attempt < max_retries - 1:
-                print(f"[unlink] File locked, retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")
-                time.sleep(delay)
+def start_display_process(script_dir: Path, monitor_index=1, use_qt_version=True, flip_90_degrees=False):
+    """Start the display process."""
+    try:
+        if use_qt_version:
+            if flip_90_degrees:
+                script_path = script_dir / "persistent_gif_display_90_deg.py"
             else:
-                print(f"[unlink] Failed to unlink {path} after {max_retries} attempts: {e}")
-                raise
-        except Exception as e:
-            print(f"[unlink] Unexpected error unlinking {path}: {e}")
-            raise
-    return False
+                script_path = script_dir / "persistent_gif_display_2.py"
+        else:
+            script_path = script_dir / "persistent_gif_display.py"
+
+        # Start the process in the background
+        proc = subprocess.Popen([
+            "python", str(script_path), str(monitor_index)
+        ], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0)
+
+        print(f"[display] Started display process {proc.pid} on monitor {monitor_index}")
+        time.sleep(2)  # Give it time to start
+        return proc.pid
+    except Exception as e:
+        print(f"[display] Failed to start display process: {e}")
+        return None
+
+def restart_display_process(script_dir: Path, monitor_index=1, use_qt_version=True, flip_90_degrees=False):
+    """Stop existing display processes and start a new one."""
+    print("[display] Restarting display process...")
+    stopped_pids = stop_display_processes()
+    time.sleep(1)  # Brief pause between stop and start
+    new_pid = start_display_process(script_dir, monitor_index, use_qt_version, flip_90_degrees)
+    return new_pid

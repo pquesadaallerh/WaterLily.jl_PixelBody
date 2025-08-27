@@ -2,6 +2,8 @@ from pathlib import Path
 import json
 import platform
 import time
+import subprocess
+import psutil
 
 import yaml
 
@@ -20,7 +22,7 @@ IS_WINDOWS = platform.system() == "Windows"
 # TODO: Merge the two implementations into one
 if IS_WINDOWS:
     from picture_sim_app.image_utils_windows import (
-        capture_image, stop_display_processes,
+        capture_image, stop_display_processes, restart_display_process,
 )
 else:
     from picture_sim_app.image_utils import (
@@ -57,6 +59,7 @@ def run_simulation(settings):
     output_path_heatmap_vorticity= OUTPUT_FOLDER / io_settings["heatmap_vorticity_name"]
     output_path_heatmap_pressure = OUTPUT_FOLDER / io_settings["heatmap_pressure_name"]
     # output_path_data = OUTPUT_FOLDER / data_file_name
+    flip_90_degrees = io_settings["flip_90_degrees"]
 
     # Unpack simulation settings:
     simulation_settings = settings["simulation_settings"]
@@ -120,6 +123,9 @@ def run_simulation(settings):
             show_components=show_components_pca,
             object_is_airfoil=object_is_airfoil,
         )
+        if flip_90_degrees:
+            # Rotate the detected angle 90 degrees counterclockwise to match angle if flow is coming from the top
+            aoa -= 90
 
         if object_is_airfoil:
             # Estimate airfoil type based on thickness and characteristic length
@@ -164,6 +170,16 @@ def run_simulation(settings):
             safe_unlink_windows(symlink_particle)
             safe_unlink_windows(symlink_heatmap_vorticity)
             safe_unlink_windows(symlink_heatmap_pressure)
+
+            # Restart display process
+            print("Restarting display process...")
+            restart_display_process(
+                script_dir=SCRIPT_DIR,
+                monitor_index=1,
+                use_qt_version=True,
+                flip_90_degrees=flip_90_degrees,
+            )
+
         else:
             # Remove existing symlinks/files if they exist
             if symlink_particle.exists() or symlink_particle.is_symlink():
