@@ -1,0 +1,999 @@
+import os
+import json
+from pathlib import Path
+import threading
+import time
+
+import cv2
+import numpy as np
+from PIL import Image, ImageSequence
+import pygame
+
+
+def enumerate_cameras(max_cameras: int = 5, timeout_per_camera: float = 2.0) -> list:
+    """
+    Enumerate available cameras with timeout to prevent hanging.
+
+    Args:
+        max_cameras: Maximum number of camera indices to check
+        timeout_per_camera: Timeout in seconds for each camera check
+
+    Returns:
+        list: List of dictionaries with camera info
+    """
+    available_cameras = []
+
+    def test_camera(index, result_list):
+        try:
+            cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)  # Use DirectShow on Windows for better performance
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)  # Set lower resolution for faster enumeration
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+            if cap.isOpened():
+                # Quick test read
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    backend_name = cap.getBackendName()
+
+                    result_list.append({
+                        'index': index,
+                        'name': f"Camera {index} ({backend_name})",
+                        'resolution': (width, height)
+                    })
+            cap.release()
+        except:
+            pass  # Ignore any errors during enumeration
+
+    # Test cameras with threading and timeout
+    for i in range(max_cameras):
+        result = []
+        thread = threading.Thread(target=test_camera, args=(i, result))
+        thread.daemon = True
+        thread.start()
+        thread.join(timeout=timeout_per_camera)
+
+        if thread.is_alive():
+            # Thread timed out, skip this camera
+            continue
+
+        available_cameras.extend(result)
+
+        # If we found cameras but this one failed, and we're past index 1, stop checking
+        if not result and available_cameras and i > 1:
+            break
+
+    return available_cameras
+
+
+def select_camera(auto_select_external: bool = True, silent: bool = False) -> int:
+    """
+    Select camera with optimized enumeration and fallback options.
+
+    Args:
+        auto_select_external: If True, automatically selects the highest index camera
+        silent: If True, suppress all output
+
+    Returns:
+        int: Selected camera index
+    """
+    if not silent:
+        print("Enumerating cameras...")
+
+    cameras = enumerate_cameras()
+
+    if not cameras:
+        # Fallback: try common camera indices directly
+        for i in [0, 1, 2]:
+            try:
+                cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+                if cap.isOpened():
+                    ret, frame = cap.read()
+                    cap.release()
+                    if ret and frame is not None:
+                        if not silent:
+                            print(f"Found working camera at index {i}")
+                        return i
+            except:
+                continue
+        raise RuntimeError("No working cameras found.")
+
+    if len(cameras) == 1:
+        selected = cameras[0]['index']
+        if not silent:
+            print(f"Using camera {selected}: {cameras[0]['name']}")
+        return selected
+
+    if auto_select_external:
+        # Select the highest index camera (usually external)
+        selected = cameras[-1]['index']
+        if not silent:
+            print(f"Auto-selected external camera {selected}: {cameras[-1]['name']}")
+        return selected
+
+    # Interactive selection
+    if not silent:
+        print("Available cameras:")
+        for cam in cameras:
+            print(f"  {cam['index']}: {cam['name']} - {cam['resolution'][0]}x{cam['resolution'][1]}")
+
+    while True:
+        try:
+            choice = int(input(f"Select camera index: "))
+            if any(cam['index'] == choice for cam in cameras):
+                return choice
+            print(f"Invalid choice. Available indices: {[cam['index'] for cam in cameras]}")
+        except (ValueError, KeyboardInterrupt):
+            # Default to first available camera
+            return cameras[0]['index']
+
+
+def load_cached_bbox(cache_file: Path):
+    """Load cached bounding box if it exists."""
+    if cache_file.exists():
+        try:
+            with open(cache_file, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            return None
+    return None
+
+
+def save_bbox_cache(cache_file: Path, bbox_data: dict):
+    """Save bounding box to cache file."""
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_file, 'w') as f:
+        json.dump(bbox_data, f, indent=2)
+
+
+def capture_image(
+        input_folder: str | Path,
+        image_name: str = "input.png",
+        fixed_aspect_ratio: tuple = None,
+        fixed_size: tuple = None,
+        selection_box_mode: bool = True,
+        saved_selection: tuple = None,
+        use_cached_box: bool = False,
+        camera_index: int = 1,
+        auto_select_external: bool = True,
+) -> tuple:
+    """
+    Capture image from webcam with optimized camera handling.
+    """
+    # Setup cache file path
+    cache_dir = Path(input_folder).parent / "cache"
+    cache_file = cache_dir / "bbox_cache.json"
+
+    # Select camera if not specified
+    if camera_index is None:
+        try:
+            camera_index = select_camera(auto_select_external, silent=use_cached_box)
+        except RuntimeError as e:
+            print(f"Camera selection failed: {e}")
+            # Try default camera as last resort
+            camera_index = 0
+
+    # If use_cached_box is True, try to load and use cached box automatically
+    if use_cached_box and selection_box_mode:
+        cached_data = load_cached_bbox(cache_file)
+        if cached_data:
+            saved_selection = tuple(cached_data.get("bbox", (0, 0, 0, 0)))
+
+            # Capture image automatically using cached bbox
+            cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+            if not cap.isOpened():
+                raise RuntimeError(f"Camera {camera_index} not accessible.")
+
+            # Optimize camera settings for performance
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            cap.set(cv2.CAP_PROP_FPS, 30)
+
+            # Wait a moment for camera to initialize
+            time.sleep(0.5)
+
+            ret, frame = cap.read()
+            cap.release()
+
+            if not ret or frame is None:
+                raise RuntimeError("Failed to capture frame from camera.")
+
+            # Apply cached bounding box
+            box_x, box_y, box_w, box_h = saved_selection
+
+            # Ensure bounding box is within frame bounds
+            frame_h, frame_w = frame.shape[:2]
+            box_x = max(0, min(frame_w - 1, box_x))
+            box_y = max(0, min(frame_h - 1, box_y))
+            box_w = max(1, min(frame_w - box_x, box_w))
+            box_h = max(1, min(frame_h - box_y, box_h))
+
+            # Crop and save
+            selected_region = frame[box_y:box_y + box_h, box_x:box_x + box_w]
+            path = Path(input_folder) / image_name
+            cv2.imwrite(str(path), selected_region)
+
+            return (box_x, box_y, box_w, box_h)
+
+    # Try to load cached bounding box if no saved_selection provided (interactive mode)
+    if saved_selection is None and selection_box_mode and not use_cached_box:
+        cached_data = load_cached_bbox(cache_file)
+        if cached_data:
+            saved_selection = tuple(cached_data.get("bbox", (0, 0, 0, 0)))
+            print("Press ENTER to use cached selection, or 'r' to reselect (5 sec timeout):")
+
+            # Timeout for user input to prevent hanging
+            def get_user_input():
+                try:
+                    return input().strip().lower()
+                except:
+                    return ""
+
+            import signal
+            def timeout_handler(signum, frame):
+                raise TimeoutError()
+
+            try:
+                # Set timeout for Windows (using threading as signal doesn't work well on Windows)
+                result = []
+
+                def input_thread():
+                    try:
+                        result.append(input().strip().lower())
+                    except:
+                        result.append("")
+
+                thread = threading.Thread(target=input_thread)
+                thread.daemon = True
+                thread.start()
+                thread.join(timeout=5.0)
+
+                user_input = result[0] if result else ""
+                if user_input == 'r':
+                    saved_selection = None
+            except:
+                pass  # Use cached selection on any error
+
+    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        raise RuntimeError(f"Camera {camera_index} not accessible.")
+
+    # Optimize camera settings for performance
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    cap.set(cv2.CAP_PROP_FPS, 30)
+
+    # Wait for camera to stabilize
+    time.sleep(0.5)
+
+    if selection_box_mode and fixed_aspect_ratio:
+        print("ASPECT RATIO SELECTION MODE:")
+        if saved_selection:
+            print("- Previous selection loaded")
+        print("- Click+drag to select, [w/a/s/d] to adjust, [space] to capture, [ESC] to quit")
+
+        # Variables for click-and-drag selection
+        target_ratio = fixed_aspect_ratio[0] / fixed_aspect_ratio[1]
+        drawing = False
+        selection_made = False
+        start_point = None
+
+        # Initialize with saved selection if provided
+        if saved_selection:
+            box_x, box_y, box_w, box_h = saved_selection
+            selection_made = True
+        else:
+            box_x, box_y, box_w, box_h = 0, 0, 0, 0
+
+        def mouse_callback(event, x, y, flags, param):
+            nonlocal drawing, start_point, box_x, box_y, box_w, box_h, selection_made
+
+            if event == cv2.EVENT_LBUTTONDOWN:
+                drawing = True
+                selection_made = False
+                start_point = (x, y)
+                box_x, box_y, box_w, box_h = x, y, 0, 0
+
+            elif event == cv2.EVENT_MOUSEMOVE and drawing:
+                if start_point:
+                    drag_w = abs(x - start_point[0])
+                    drag_h = abs(y - start_point[1])
+
+                    if drag_w < 10 and drag_h < 10:
+                        return
+                    elif drag_h == 0:
+                        box_w = drag_w
+                        box_h = int(box_w / target_ratio)
+                    elif drag_w == 0:
+                        box_h = drag_h
+                        box_w = int(box_h * target_ratio)
+                    else:
+                        if drag_w / drag_h > target_ratio:
+                            box_h = drag_h
+                            box_w = int(box_h * target_ratio)
+                        else:
+                            box_w = drag_w
+                            box_h = int(box_w / target_ratio)
+
+                    # Position the box based on drag direction
+                    box_x = start_point[0] if x >= start_point[0] else start_point[0] - box_w
+                    box_y = start_point[1] if y >= start_point[1] else start_point[1] - box_h
+
+                    # Keep box within camera bounds
+                    cam_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    cam_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    box_x = max(0, min(cam_w - box_w, box_x))
+                    box_y = max(0, min(cam_h - box_h, box_y))
+
+            elif event == cv2.EVENT_LBUTTONUP:
+                drawing = False
+                if box_w > 0 and box_h > 0:
+                    selection_made = True
+
+        cv2.namedWindow("Live Feed", cv2.WINDOW_AUTOSIZE)
+        cv2.setMouseCallback("Live Feed", mouse_callback)
+
+        frame_count = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            # Skip frames for better performance
+            frame_count += 1
+            if frame_count % 2 != 0:  # Only process every other frame
+                continue
+
+            display_frame = frame.copy()
+
+            # Draw the selection box if we have valid dimensions
+            if box_w > 0 and box_h > 0:
+                color = (0, 255, 0) if selection_made else (255, 255, 0)
+                cv2.rectangle(display_frame, (box_x, box_y), (box_x + box_w, box_y + box_h), color, 2)
+
+                # Draw corner markers
+                corners = [(box_x, box_y), (box_x + box_w, box_y), (box_x, box_y + box_h),
+                           (box_x + box_w, box_y + box_h)]
+                for (cx, cy) in corners:
+                    cv2.line(display_frame, (cx - 10, cy), (cx + 10, cy), color, 2)
+                    cv2.line(display_frame, (cx, cy - 10), (cx, cy + 10), color, 2)
+
+                status = "SELECTED" if selection_made else "DRAGGING"
+                cv2.putText(display_frame, f"{box_w}x{box_h} - {status}", (box_x, box_y - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+            cv2.imshow("Live Feed", display_frame)
+
+            key = cv2.waitKey(30) & 0xFF  # Increase wait time for better performance
+            if key == 27:  # ESC
+                cap.release()
+                cv2.destroyAllWindows()
+                return None
+            elif key == 32:  # Spacebar
+                if box_w > 0 and box_h > 0:
+                    selected_region = frame[box_y:box_y + box_h, box_x:box_x + box_w]
+                    path = Path(input_folder) / image_name
+                    cv2.imwrite(str(path), selected_region)
+
+                    # Save bounding box to cache
+                    bbox_data = {
+                        'bbox': (box_x, box_y, box_w, box_h),
+                        'aspect_ratio': fixed_aspect_ratio,
+                        'image_name': image_name,
+                        'camera_index': camera_index
+                    }
+                    save_bbox_cache(cache_file, bbox_data)
+                    break
+
+            # WASD controls for fine-tuning position
+            if selection_made:
+                move_step = 5
+                cam_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                cam_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+                if key == ord('w'):
+                    box_y = max(0, box_y - move_step)
+                elif key == ord('s'):
+                    box_y = min(cam_h - box_h, box_y + move_step)
+                elif key == ord('a'):
+                    box_x = max(0, box_x - move_step)
+                elif key == ord('d'):
+                    box_x = min(cam_w - box_w, box_x + move_step)
+                elif key == ord('r'):
+                    selection_made = False
+                    box_x, box_y, box_w, box_h = 0, 0, 0, 0
+
+        cap.release()
+        cv2.destroyAllWindows()
+        return (box_x, box_y, box_w, box_h)
+
+    else:
+        # Original behavior for non-selection modes
+        print("Press [space] to capture, [ESC] to quit.")
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            cv2.imshow("Live Feed", frame)
+
+            key = cv2.waitKey(30) & 0xFF
+            if key == 27:  # ESC
+                cap.release()
+                cv2.destroyAllWindows()
+                return (0, 0, 0, 0)
+            elif key == 32:  # Spacebar
+                path = Path(input_folder) / image_name
+                cv2.imwrite(str(path), frame)
+                break
+
+        cap.release()
+        cv2.destroyAllWindows()
+
+        # Apply post-processing for non-selection modes
+        img = cv2.imread(str(path))
+        if img is None:
+            raise RuntimeError(f"Failed to load image {path} for cropping.")
+
+        if fixed_size:
+            # Crop to exact fixed size from center
+            h, w = img.shape[:2]
+            target_w, target_h = fixed_size
+
+            start_x = max(0, (w - target_w) // 2)
+            start_y = max(0, (h - target_h) // 2)
+            end_x = min(w, start_x + target_w)
+            end_y = min(h, start_y + target_h)
+
+            cropped_img = img[start_y:end_y, start_x:end_x]
+
+            if cropped_img.shape[:2] != (target_h, target_w):
+                padded_img = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+                paste_y = (target_h - cropped_img.shape[0]) // 2
+                paste_x = (target_w - cropped_img.shape[1]) // 2
+                padded_img[paste_y:paste_y + cropped_img.shape[0], paste_x:paste_x + cropped_img.shape[1]] = cropped_img
+                cropped_img = padded_img
+
+            cv2.imwrite(str(path), cropped_img)
+            return (start_x, start_y, target_w, target_h)
+
+        elif fixed_aspect_ratio:
+            # Crop to fixed aspect ratio
+            h, w = img.shape[:2]
+            target_ratio = fixed_aspect_ratio[0] / fixed_aspect_ratio[1]
+            current_ratio = w / h
+
+            if current_ratio > target_ratio:
+                new_width = int(h * target_ratio)
+                start_x = (w - new_width) // 2
+                cropped_img = img[:, start_x:start_x + new_width]
+            else:
+                new_height = int(w / target_ratio)
+                start_y = (h - new_height) // 2
+                cropped_img = img[start_y:start_y + new_height, :]
+
+            cv2.imwrite(str(path), cropped_img)
+            h, w = cropped_img.shape[:2]
+            return (0, 0, w, h)
+
+        else:
+            # Original manual cropping behavior
+            print("Select ROI (drag mouse to crop). Press ENTER or SPACE to confirm, or 'c' to cancel.")
+            roi = cv2.selectROI("Crop Image", img, showCrosshair=True, fromCenter=False)
+            cv2.destroyAllWindows()
+
+            x, y, w, h = roi
+            if w > 0 and h > 0:
+                cropped_img = img[int(y):int(y + h), int(x):int(x + w)]
+                cv2.imwrite(str(path), cropped_img)
+                return (int(x), int(y), int(w), int(h))
+            else:
+                h, w = img.shape[:2]
+                return (0, 0, w, h)
+
+
+def list_monitors() -> list:
+    """List available monitors and their properties."""
+    pygame.init()
+
+    # Get number of displays
+    num_displays = pygame.display.get_num_displays()
+    print(f"Number of displays detected: {num_displays}")
+
+    monitors = []
+    for i in range(num_displays):
+        # Get display bounds
+        display_info = pygame.display.get_desktop_sizes()[i] if hasattr(pygame.display, 'get_desktop_sizes') else (1920,
+                                                                                                                   1080)
+        monitors.append({
+            'index': i,
+            'width': display_info[0],
+            'height': display_info[1]
+        })
+        print(f"  Monitor {i}: {display_info[0]}x{display_info[1]}")
+
+    pygame.quit()
+    return monitors
+
+
+def display_gif_fullscreen(gif_path: str | Path, monitor_index: int = 0, force_windowed: bool = False) -> None:
+    """
+    Display a GIF in fullscreen mode on a specific monitor using pygame.
+
+    Args:
+        gif_path (str): Absolute path to the GIF file
+        monitor_index (int): Index of the monitor to use (0 for primary, 1 for secondary, etc.)
+        force_windowed (bool): If True, starts in windowed mode instead of fullscreen
+    """
+    try:
+        # Initialize pygame
+        pygame.init()
+
+        # Get monitor information
+        num_displays = pygame.display.get_num_displays()
+        print(f"Available displays: {num_displays}")
+
+        if monitor_index >= num_displays:
+            print(f"Monitor {monitor_index} not found. Using monitor 0.")
+            monitor_index = 0
+
+        # Get all desktop sizes
+        desktop_sizes = pygame.display.get_desktop_sizes() if hasattr(pygame.display, 'get_desktop_sizes') else [(1920,
+                                                                                                                  1080)] * num_displays
+        print(f"Desktop sizes: {desktop_sizes}")
+
+        # Calculate position for the target monitor
+        x_offset = 0
+        for i in range(monitor_index):
+            if i < len(desktop_sizes):
+                x_offset += desktop_sizes[i][0]
+
+        y_offset = 0  # Assuming monitors are horizontally aligned
+
+        # Get target monitor dimensions
+        if monitor_index < len(desktop_sizes):
+            screen_width, screen_height = desktop_sizes[monitor_index]
+        else:
+            screen_width, screen_height = 1920, 1080
+
+        print(f"Target monitor {monitor_index}: {screen_width}x{screen_height} at offset ({x_offset}, {y_offset})")
+
+        # Set window position BEFORE creating the display
+        os.environ['SDL_VIDEO_WINDOW_POS'] = f'{x_offset},{y_offset}'
+
+        # Start in windowed mode first, then go fullscreen
+        # This helps with proper monitor detection
+        if force_windowed:
+            screen = pygame.display.set_mode((screen_width, screen_height))
+            fullscreen = False
+        else:
+            # Create windowed first, then switch to fullscreen
+            screen = pygame.display.set_mode((screen_width, screen_height))
+            pygame.time.wait(100)  # Brief pause
+            screen = pygame.display.set_mode((screen_width, screen_height), pygame.FULLSCREEN)
+            fullscreen = True
+        pygame.display.set_caption("GIF Player")
+
+        # Load and process GIF
+        print("Loading GIF...")
+        gif = Image.open(gif_path)
+        frames = []
+        durations = []
+
+        # Extract all frames
+        frame_count = 0
+        while True:
+            try:
+                # Convert PIL image to pygame surface
+                frame = gif.convert('RGBA')
+                pygame_image = pygame.image.fromstring(frame.tobytes(), frame.size, 'RGBA')
+
+                # Scale frame to fit screen while maintaining aspect ratio
+                frame_rect = pygame_image.get_rect()
+                screen_rect = screen.get_rect()
+
+                # Calculate scaling factor
+                scale_x = screen_rect.width / frame_rect.width
+                scale_y = screen_rect.height / frame_rect.height
+                scale = min(scale_x, scale_y)
+
+                new_width = int(frame_rect.width * scale)
+                new_height = int(frame_rect.height * scale)
+
+                # Scale the image
+                scaled_image = pygame.transform.scale(pygame_image, (new_width, new_height))
+
+                # Center the image
+                centered_rect = scaled_image.get_rect(center=screen_rect.center)
+
+                frames.append((scaled_image, centered_rect))
+
+                # Get frame duration
+                duration = gif.info.get('duration', 100)  # Default 100ms
+                durations.append(duration)
+
+                frame_count += 1
+                gif.seek(frame_count)
+
+            except EOFError:
+                break
+
+        if not frames:
+            print("No frames found in the GIF")
+            return
+
+        print(f"Loaded {len(frames)} frames")
+        print("Controls: ESC/Q=quit, SPACE=pause/resume, F=toggle fullscreen, M=move to next monitor")
+
+        # Animation loop
+        clock = pygame.time.Clock()
+        frame_index = 0
+        running = True
+        paused = False
+        last_frame_time = pygame.time.get_ticks()
+        current_monitor = monitor_index
+
+        while running:
+            current_time = pygame.time.get_ticks()
+
+            # Handle events
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE or event.key == pygame.K_q:
+                        running = False
+                    elif event.key == pygame.K_SPACE:
+                        paused = not paused
+                        if paused:
+                            print("Paused")
+                        else:
+                            print("Resumed")
+                            last_frame_time = current_time
+                    elif event.key == pygame.K_f:
+                        # Toggle fullscreen
+                        fullscreen = not fullscreen
+                        if fullscreen:
+                            screen = pygame.display.set_mode((screen_width, screen_height), pygame.FULLSCREEN)
+                            print("Switched to fullscreen")
+                        else:
+                            screen = pygame.display.set_mode((screen_width, screen_height))
+                            print("Switched to windowed")
+                    elif event.key == pygame.K_m:
+                        # Move to next monitor
+                        current_monitor = (current_monitor + 1) % num_displays
+
+                        # Calculate new position
+                        new_x_offset = 0
+                        for i in range(current_monitor):
+                            if i < len(desktop_sizes):
+                                new_x_offset += desktop_sizes[i][0]
+
+                        # Get new monitor dimensions
+                        if current_monitor < len(desktop_sizes):
+                            screen_width, screen_height = desktop_sizes[current_monitor]
+
+                        print(f"Moving to monitor {current_monitor}: {screen_width}x{screen_height}")
+
+                        # Recreate window on new monitor
+                        os.environ['SDL_VIDEO_WINDOW_POS'] = f'{new_x_offset},0'
+                        if fullscreen:
+                            screen = pygame.display.set_mode((screen_width, screen_height), pygame.FULLSCREEN)
+                        else:
+                            screen = pygame.display.set_mode((screen_width, screen_height))
+
+            # Update animation if not paused
+            if not paused and current_time - last_frame_time >= durations[frame_index]:
+                frame_index = (frame_index + 1) % len(frames)
+                last_frame_time = current_time
+
+            # Draw current frame
+            screen.fill((0, 0, 0))  # Black background
+            frame_surface, frame_rect = frames[frame_index]
+            screen.blit(frame_surface, frame_rect)
+
+            pygame.display.flip()
+            clock.tick(60)  # Limit to 60 FPS for smooth playback
+
+    except FileNotFoundError:
+        print(f"Error: GIF file not found at {gif_path}")
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        pygame.quit()
+
+
+def crop_gif(
+        input_path: str | Path,
+        output_path: str | Path,
+        crop_box: tuple,
+) -> None:
+    """
+    Crop each frame of a GIF using specified coordinates.
+
+    Args:
+        input_path (str): Path to the input GIF.
+        output_path (str): Path to save the cropped GIF.
+        crop_box (tuple): (left, top, right, bottom) coordinates for cropping.
+    """
+    left, top, right, bottom = crop_box
+
+    with Image.open(input_path) as img:
+        frames = []
+        durations = []
+
+        for frame in ImageSequence.Iterator(img):
+            frame = frame.convert("RGBA")
+
+            # Crop the frame
+            cropped_frame = frame.crop((left, top, right, bottom))
+
+            frames.append(cropped_frame)
+            durations.append(frame.info.get('duration', 100))
+
+        # Save as animated GIF
+        frames[0].save(
+            output_path,
+            save_all=True,
+            append_images=frames[1:],
+            duration=durations,
+            loop=0,
+            disposal=2
+        )
+
+
+def resize_gif(
+        input_path: str | Path,
+        output_path: str | Path,
+        target_size: tuple = (1920, 1080),
+        maintain_aspect: bool = True,
+        fill_color: tuple = (0, 0, 0, 0),
+) -> None:
+    """
+    Resize each frame of a GIF with improved aspect ratio handling.
+
+    Args:
+        input_path (str): Path to the input GIF.
+        output_path (str): Path to save the resized GIF.
+        target_size (tuple): Desired (width, height), e.g., (1920, 1080).
+        maintain_aspect (bool): If True, maintain aspect ratio (may result in smaller output).
+                               If False, stretch to exact target size.
+        fill_color (tuple): RGBA fill color for padding when maintain_aspect=True.
+    """
+    with Image.open(input_path) as img:
+        frames = []
+        durations = []
+
+        for frame in ImageSequence.Iterator(img):
+            frame = frame.convert("RGBA")
+            orig_w, orig_h = frame.size
+            target_w, target_h = target_size
+
+            if maintain_aspect:
+                # Compute scale to preserve aspect ratio
+                scale = min(target_w / orig_w, target_h / orig_h)
+                new_w = int(orig_w * scale)
+                new_h = int(orig_h * scale)
+
+                # Resize with aspect ratio
+                resized = frame.resize((new_w, new_h), Image.BICUBIC)
+
+                # Create new canvas and paste resized frame in center
+                canvas = Image.new("RGBA", target_size, fill_color)
+                offset_x = (target_w - new_w) // 2
+                offset_y = (target_h - new_h) // 2
+                canvas.paste(resized, (offset_x, offset_y))
+                frames.append(canvas)
+            else:
+                # Stretch to exact target size
+                resized = frame.resize(target_size, Image.BICUBIC)
+                frames.append(resized)
+
+            durations.append(frame.info.get('duration', 100))
+
+        # Save as animated GIF
+        frames[0].save(
+            output_path,
+            save_all=True,
+            append_images=frames[1:],
+            duration=durations,
+            loop=0,
+            disposal=2
+        )
+
+
+def get_gif_dimensions(gif_path: str | Path) -> tuple:
+    """
+    Get the dimensions of the first frame of a GIF.
+
+    Args:
+        gif_path: Path to the GIF file
+
+    Returns:
+        tuple: (width, height) of the GIF
+    """
+    with Image.open(gif_path) as img:
+        return img.size
+
+
+def make_gifs_consistent_size(
+        gif_paths: list,
+        target_size: tuple = None,
+        maintain_aspect: bool = True,
+        crop_boxes: list = None
+) -> None:
+    """
+    Process multiple GIFs to have consistent dimensions.
+
+    Args:
+        gif_paths: List of GIF file paths to process
+        target_size: Target (width, height). If None, uses largest dimensions found
+        maintain_aspect: Whether to maintain aspect ratio
+        crop_boxes: Optional list of crop boxes [(left, top, right, bottom), ...] for each GIF
+    """
+    if not gif_paths:
+        return
+
+    # If target_size not specified, find the largest dimensions
+    if target_size is None:
+        max_w, max_h = 0, 0
+        for gif_path in gif_paths:
+            w, h = get_gif_dimensions(gif_path)
+            max_w = max(max_w, w)
+            max_h = max(max_h, h)
+        target_size = (max_w, max_h)
+
+    print(f"Processing {len(gif_paths)} GIFs to consistent size: {target_size}")
+
+    # Process each GIF
+    for i, gif_path in enumerate(gif_paths):
+        # Apply crop if specified
+        if crop_boxes and i < len(crop_boxes) and crop_boxes[i]:
+            temp_path = str(gif_path).replace('.gif', '_temp.gif')
+            crop_gif(gif_path, temp_path, crop_boxes[i])
+            gif_path = temp_path
+
+        # Resize to target size
+        backup_path = str(gif_path).replace('.gif', '_backup.gif')
+
+        # Create backup
+        import shutil
+        shutil.copy2(gif_path, backup_path)
+
+        # Resize
+        resize_gif(gif_path, gif_path, target_size, maintain_aspect)
+
+        print(f"Processed {gif_path}")
+
+
+def display_two_gifs_side_by_side(
+        gif_path_left, gif_path_right, monitor_index=0, force_windowed=False, target_size=None
+):
+    """
+    Display two GIFs side by side with consistent sizing.
+
+    Args:
+        gif_path_left: Path to left GIF
+        gif_path_right: Path to right GIF
+        monitor_index: Monitor to display on
+        force_windowed: Force windowed mode
+        target_size: If provided (width, height), ensures both GIFs are this size
+    """
+    pygame.init()
+    num_displays = pygame.display.get_num_displays()
+    desktop_sizes = pygame.display.get_desktop_sizes() if hasattr(pygame.display, "get_desktop_sizes") else [(1920,
+                                                                                                              1080)] * num_displays
+
+    print(f"Available displays: {num_displays}")
+    for i, size in enumerate(desktop_sizes):
+        status = " (CURRENT)" if i == monitor_index else ""
+        print(f"  Monitor {i}: {size[0]}x{size[1]}{status}")
+
+    if monitor_index >= num_displays:
+        print(f"Monitor {monitor_index} not available. Using monitor 0.")
+        monitor_index = 0
+
+    x_offset = sum(desktop_sizes[i][0] for i in range(monitor_index))
+    screen_width, screen_height = desktop_sizes[monitor_index]
+    os.environ["SDL_VIDEO_WINDOW_POS"] = f"{x_offset},0"
+    screen = pygame.display.set_mode((screen_width, screen_height), pygame.FULLSCREEN if not force_windowed else 0)
+    pygame.display.set_caption(f"Flow visualization - Monitor {monitor_index}")
+
+    def load_gif_frames(gif_path, target_h):
+        gif = Image.open(gif_path)
+        frames, durations, widths = [], [], []
+        for frame in ImageSequence.Iterator(gif):
+            frame = frame.convert('RGBA')
+            orig_w, orig_h = frame.size
+            scale = target_h / orig_h
+            new_w = int(orig_w * scale)
+            frame_resized = frame.resize((new_w, target_h), Image.BICUBIC)
+            surf = pygame.image.fromstring(frame_resized.tobytes(), frame_resized.size, 'RGBA')
+            frames.append(surf)
+            durations.append(frame.info.get('duration', 100))
+            widths.append(new_w)
+        return frames, durations, widths[0] if widths else 0
+
+    # Load frames and get their widths
+    frames_left, durations_left, width_left = load_gif_frames(gif_path_left, screen_height)
+    frames_right, durations_right, width_right = load_gif_frames(gif_path_right, screen_height)
+
+    # If combined width > screen, scale both down
+    total_width = width_left + width_right
+    if total_width > screen_width:
+        scale = screen_width / total_width
+        new_h = int(screen_height * scale)
+        frames_left, durations_left, width_left = load_gif_frames(gif_path_left, new_h)
+        frames_right, durations_right, width_right = load_gif_frames(gif_path_right, new_h)
+        y_offset = (screen_height - new_h) // 2
+    else:
+        y_offset = 0
+
+    idx_left = idx_right = 0
+    last_time_left = last_time_right = pygame.time.get_ticks()
+    running = True
+    clock = pygame.time.Clock()
+    current_monitor = monitor_index
+
+    print("Controls: ESC/Q=quit, M=switch monitor, F=toggle fullscreen")
+
+    while running:
+        now = pygame.time.get_ticks()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key in [pygame.K_ESCAPE, pygame.K_q]:
+                    running = False
+                elif event.key == pygame.K_m:
+                    # Switch to next monitor
+                    current_monitor = (current_monitor + 1) % num_displays
+                    x_offset = sum(desktop_sizes[i][0] for i in range(current_monitor))
+                    screen_width, screen_height = desktop_sizes[current_monitor]
+
+                    print(f"Switching to monitor {current_monitor}: {screen_width}x{screen_height}")
+
+                    # Recreate window on new monitor
+                    os.environ["SDL_VIDEO_WINDOW_POS"] = f"{x_offset},0"
+                    is_fullscreen = screen.get_flags() & pygame.FULLSCREEN
+                    screen = pygame.display.set_mode((screen_width, screen_height),
+                                                     pygame.FULLSCREEN if is_fullscreen else 0)
+                    pygame.display.set_caption(f"Flow visualization - Monitor {current_monitor}")
+
+                    # Need to reload frames for new screen height
+                    frames_left, durations_left, width_left = load_gif_frames(gif_path_left, screen_height)
+                    frames_right, durations_right, width_right = load_gif_frames(gif_path_right, screen_height)
+
+                    # Recalculate scaling if needed
+                    total_width = width_left + width_right
+                    if total_width > screen_width:
+                        scale = screen_width / total_width
+                        new_h = int(screen_height * scale)
+                        frames_left, durations_left, width_left = load_gif_frames(gif_path_left, new_h)
+                        frames_right, durations_right, width_right = load_gif_frames(gif_path_right, new_h)
+                        y_offset = (screen_height - new_h) // 2
+                    else:
+                        y_offset = 0
+
+                elif event.key == pygame.K_f:
+                    # Toggle fullscreen
+                    is_fullscreen = screen.get_flags() & pygame.FULLSCREEN
+                    if is_fullscreen:
+                        screen = pygame.display.set_mode((screen_width, screen_height))
+                        print("Switched to windowed mode")
+                    else:
+                        screen = pygame.display.set_mode((screen_width, screen_height), pygame.FULLSCREEN)
+                        print("Switched to fullscreen mode")
+
+        if now - last_time_left >= durations_left[idx_left]:
+            idx_left = (idx_left + 1) % len(frames_left)
+            last_time_left = now
+        if now - last_time_right >= durations_right[idx_right]:
+            idx_right = (idx_right + 1) % len(frames_right)
+            last_time_right = now
+
+        screen.fill((0, 0, 0))
+        screen.blit(frames_left[idx_left], (0, y_offset))
+        screen.blit(frames_right[idx_right], (width_left, y_offset))
+        pygame.display.flip()
+        clock.tick(60)
+    pygame.quit()

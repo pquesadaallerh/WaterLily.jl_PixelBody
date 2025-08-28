@@ -1,17 +1,33 @@
 from pathlib import Path
 import json
 import os, shutil
+import platform
 
 import yaml
 
 from picture_sim_app.characteristic_length_and_aoa_estimation import characteristic_length_and_aoa_pca
 from picture_sim_app.detect_airfoil_type import detect_airfoil_type
 
-from picture_sim_app.image_utils import (
-    capture_image,
-)
+
 from picture_sim_app.live_simulation import run_julia_simulation_script
 from picture_sim_app.pixel_body_python import PixelBodyMask
+
+# OS-specific imports (some features did not work as expected on a Windows device and required tweaks. In the future
+# it would be better to merge the two implementations into one, but due to time constraints there are two parallel
+# implementations at the moment).
+
+IS_WINDOWS = platform.system() == "Windows"
+
+# TODO: Merge the two implementations into one
+if IS_WINDOWS:
+    from picture_sim_app.image_utils_windows import (
+        capture_image,
+    )
+else:
+    from picture_sim_app.image_utils import (
+        capture_image,
+    )
+
 
 # Define absolute path to the script directory
 SCRIPT_DIR = Path(__file__).resolve().parent
