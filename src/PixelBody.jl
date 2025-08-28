@@ -8,23 +8,41 @@ catch e
 end
 import Statistics: mean
 
+"""
+    PixelBody{T,A<:AbstractArray{T,2}} <: AbstractBody
+
+A body derived from a pixel image.
+
+Fields:
+- `μ₀::A`: zeroth-moment vector where 1=fluid, 0=solid. 
+"""
 struct PixelBody{T,A<:AbstractArray{T,2}} <: AbstractBody
     μ₀::A # needs to be same size as sim scalar (p) and from 0..1
-    # size(sim.flow.p)
     # sim.ϵ -> Gauss σ
     # extrema(μ₀) = (0,1)
 end
 
 """
-    PixelBody(mask::AbstractArray{Bool,2}; ϵ=1.0, mem=Array)
+    PixelBody(mask::AbstractArray{Bool,2}; 
+              ϵ=1.0, 
+              invert_mask_logic=false, 
+              mem=Array)
 
-Simplified constructor that takes an existing boolean mask where:
-- Input mask: true=fluid, false=solid
+Outer constructor that takes an existing boolean mask and creates a PixelBody object.
 
-and returns
-- μ₀_array: 1=fluid, 0=solid
+Arguments:
+- `mask::AbstractArray{Bool,2}`: Input boolean mask (true=fluid, false=solid by default).
+- `ϵ`: Smoothing parameter for the zeroth-moment vector μ₀ (default: 1.0).
+- `invert_mask_logic`: If true, invert boolean mask so that false=fluid, true=solid (default: false).
+- `mem`: Array type for output (default: Array).
 
-If the logic of the provided mask is inverted, set 'invert_mask_logic' to true.
+Returns:
+- `PixelBody` object containing the zeroth-moment vector μ₀ (1=fluid, 0=solid).
+
+Notes:
+- Input mask should have true=fluid, false=solid unless `invert_mask_logic=true`.
+- The mask is padded to the next power-of-2 size with ghost cells.
+- All edges are assumed to be fluid during padding.
 """
 function PixelBody(
     mask::AbstractArray{Bool,2}; ϵ=1.0, invert_mask_logic=false, mem=Array
@@ -41,7 +59,7 @@ function PixelBody(
     # Compute signed distance field (SDF will be positive in fluid, negative in solid)
     sdf = Float32.(distance_transform(feature_transform(.!mask_padded)) .- distance_transform(feature_transform(mask_padded)))
     
-    # Smooth volume fraction field using kernel (μ₀_array: 1=fluid, 0=solid)
+    # Smooth zeroth-moment vector μ₀ using kernel (1=fluid, 0=solid)
     μ₀_array = mem(Float32.(μ₀.(sdf, Float32(ϵ))))
 
     # # TEMP Debug plot
@@ -52,7 +70,41 @@ function PixelBody(
     return PixelBody(μ₀_array)
 end
 
-# Outer constructor for PixelBody from image path
+
+"""
+    PixelBody(image_path::String;
+              threshold=0.5,
+              diff_threshold=nothing,
+              ϵ=1.0,
+              max_image_res=nothing,
+              body_color="gray",
+              manual_mode=false,
+              invert_mask_logic=true,
+              mem=Array)
+
+Outer constructor using image recognition from an input image.
+It first generates a boolean mask distinguishing fluid and solid regions,
+and outputs the zeroth-moment vector μ₀.
+
+Arguments:
+- `image_path::String`: Path to the input image file.
+- `threshold`: Intensity threshold for solid detection (default: 0.5).
+- `diff_threshold`: Channel difference threshold for color-based detection (default: nothing).
+- `ϵ`: Smoothing parameter for the zeroth-moment vector μ₀ (default: 1.0).
+- `max_image_res`: Maximum allowed image resolution (default: nothing).
+- `body_color`: Color of the solid body ("gray", "red", "green", "blue"; default: "gray").
+- `manual_mode`: If true, use manual thresholding (default: false).
+- `invert_mask_logic`: If true, invert mask logic so that 1=fluid, 0=solid (default: true).
+- `mem`: Array type for output (default: Array).
+
+Returns:
+- `PixelBody` object containing the zeroth-moment vector μ₀ (1=fluid, 0=solid).
+
+Notes:
+- The mask is padded to the next power-of-2 size with ghost cells.
+- For grayscale images, solid is assumed to be black and fluid white.
+- All edges are assumed to be fluid during padding.
+"""
 function PixelBody(
     image_path::String;
     threshold=0.5,
@@ -72,7 +124,7 @@ function PixelBody(
         println("Image resized to $(size(img))")
     end
 
-    mask = create_fluid_solid_mask_using_image_recognition(img, body_color, threshold, diff_threshold, manual_mode, force_invert_mask)
+    mask = create_fluid_solid_mask_using_image_recognition(img, body_color, threshold, diff_threshold, manual_mode, invert_mask_logic)
 
     if invert_mask_logic
         # Sometimes image recognition returns inverse mask logic (depends on camera and light). Then a reversal is needed
@@ -87,10 +139,10 @@ function PixelBody(
     # required to caclulate body forces).
     sdf = Float32.(distance_transform(feature_transform(.!mask_padded)) .- distance_transform(feature_transform(mask_padded)))
 
-    # TODO: Smooth volume fraction field using kernel (Need to find out how to use properly to create the solid-fluid gradient)
+    # TODO: Smooth zeroth-moment vector μ₀ using kernel (Need to find out how to use properly to create the solid-fluid gradient)
     μ₀_array = mem(Float32.(μ₀.(sdf, Float32(ϵ))))
 
-    # TODO: TEMP images for debugging
+    # TODO: TEMP plots for debugging
     # display(heatmap(Array(img), color=:coolwarm, title="Raw image", aspect_ratio=:equal))
     # display(heatmap(Array(mask)', color=:coolwarm, title="Threshold mask", aspect_ratio=:equal))
     # display(heatmap(Array(mask_padded)', color=:coolwarm, title="Threshold mask (padded)", aspect_ratio=:equal))
