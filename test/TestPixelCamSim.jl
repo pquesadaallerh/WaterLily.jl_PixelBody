@@ -18,7 +18,7 @@ push!(LOAD_PATH, joinpath(@__DIR__, "..", "..", "Pathlines.jl", "src")) # For no
                                                                         # of Pathlines (Pathlines.jl/src/ needs to be in the 
                                                                         # same dir level as this root dir)
 include(joinpath(@__DIR__, "plot_particles.jl"))  # Add module containing particle plotting functions
-include(joinpath(@__DIR__, "run_sim.jl"))  # Simple simulation runner
+include(joinpath(@__DIR__, "run_sim.jl"))  # Simulation runner
 include(joinpath(@__DIR__, "plot_heatmaps.jl"))  # Heatmap plotting functions
 
 # set up airfoil simulation from boolean mask
@@ -26,10 +26,10 @@ function PixelSimAirfoilFromMask(mask_file; Re=200, ϵ=1, LS=nothing, mem=Array)
     # Load the boolean mask from numpy file
     mask = npzread(mask_file)
     
-    # Create PixelBody using the new mask constructor
+    # Create PixelBody using the mask constructor
     airfoil_pixel_body = WaterLily.PixelBody(mask; ϵ=ϵ, mem=mem)
     
-    # Use provided characteristic length or estimate it
+    # Use provided characteristic length, otherwise estimate it
     if LS === nothing
         LS, _ = WaterLily.estimate_characteristic_length(airfoil_pixel_body, method="pca", plot_method=false)
     end
@@ -92,7 +92,7 @@ function run_simulation(
 
         # Run the simulation. 
         println("Running PixelBody simulation...")
-        sim_data = run_simulation_collect_data(
+        sim_data = run_sim(
             sim;
             t_i=0.01, duration=t_sim, Δt=delta_t,
             N_particles=2^14, life_particles=1e3,
