@@ -2,8 +2,6 @@ from pathlib import Path
 import json
 import platform
 import time
-import subprocess
-import psutil
 
 import yaml
 
