@@ -98,31 +98,19 @@ class GifDisplay(QWidget):
             main_layout.addWidget(label, 1)  # Equal stretch for both labels
             self.labels.append(label)
 
-        # Create title label as overlay with improved styling
+        # Create title label as overlay (no layout, positioned manually)
         self.title_label = QLabel("Loading...", self)
         self.title_label.setAlignment(Qt.AlignCenter)
         title_font = QFont()
-        title_font.setPointSize(18)  # Reduced from 24 to 18
+        title_font.setPointSize(14)
         title_font.setBold(True)
         self.title_label.setFont(title_font)
-        
-        # Add semi-transparent background and white text for better visibility
-        self.title_label.setStyleSheet("""
-            QLabel {
-                color: white; 
-                background-color: rgba(0, 0, 0, 150); 
-                border-radius: 8px; 
-                padding: 8px;
-            }
-        """)
-        
-        # Make sure title is always on top
-        self.title_label.raise_()
+        self.title_label.setStyleSheet("color: black; padding: 5px;")  # Black text, no background
         self.title_label.setAttribute(Qt.WA_TransparentForMouseEvents)  # Allow mouse events to pass through
-        
+
         # Update title with airfoil data
         self.update_title()
-        
+
         # poll symlinks every 2s
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll_symlinks)
