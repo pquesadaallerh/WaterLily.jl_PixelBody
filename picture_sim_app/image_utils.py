@@ -31,6 +31,8 @@ def capture_image(
         selection_box_mode: bool = True,
         saved_selection: tuple = None,
         use_cached_box: bool = False,
+        **_kwargs, # To allow camera_index arg even if not used (only needed for windows version of the function,
+                  # see image_utils_windows.py)
 ) -> tuple:
     """
     Capture image from webcam with optional fixed aspect ratio, size, or interactive selection box.

@@ -1,11 +1,13 @@
 import os
 import json
+import subprocess
 from pathlib import Path
 import threading
 import time
 
 import cv2
 import numpy as np
+import psutil
 from PIL import Image, ImageSequence
 import pygame
 
@@ -563,3 +565,61 @@ def get_gif_dimensions(gif_path: str | Path) -> tuple:
     """
     with Image.open(gif_path) as img:
         return img.size
+
+
+def find_display_processes():
+    """Find running display processes by looking for our display scripts."""
+    processes = []
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            cmdline = proc.info['cmdline']
+            if cmdline and any('persistent_gif_display' in str(arg) for arg in cmdline):
+                processes.append(proc.info['pid'])
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return processes
+
+
+def stop_display_processes():
+    """Stop any running display processes."""
+    pids = find_display_processes()
+    stopped = []
+    for pid in pids:
+        try:
+            proc = psutil.Process(pid)
+            proc.terminate()
+            proc.wait(timeout=5)  # Wait up to 5 seconds for graceful shutdown
+            stopped.append(pid)
+            print(f"[display] Stopped display process {pid}")
+        except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+            try:
+                proc.kill()  # Force kill if terminate didn't work
+                stopped.append(pid)
+                print(f"[display] Force killed display process {pid}")
+            except psutil.NoSuchProcess:
+                pass
+        except Exception as e:
+            print(f"[display] Failed to stop process {pid}: {e}")
+    return stopped
+
+
+def safe_unlink_windows(path: Path, max_retries: int = 3, delay: float = 0.5):
+    """
+    Simplified unlink - display process will be restarted so no need for complex retry logic.
+    """
+    for attempt in range(max_retries):
+        try:
+            if path.exists() or path.is_symlink():
+                path.unlink()
+            return True
+        except PermissionError as e:
+            if attempt < max_retries - 1:
+                print(f"[unlink] File locked, retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+            else:
+                print(f"[unlink] Failed to unlink {path} after {max_retries} attempts: {e}")
+                raise
+        except Exception as e:
+            print(f"[unlink] Unexpected error unlinking {path}: {e}")
+            raise
+    return False

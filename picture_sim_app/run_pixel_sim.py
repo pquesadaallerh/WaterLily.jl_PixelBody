@@ -1,16 +1,15 @@
 from pathlib import Path
 import json
-import os, shutil
 import platform
+import time
 
 import yaml
 
 from picture_sim_app.characteristic_length_and_aoa_estimation import characteristic_length_and_aoa_pca
 from picture_sim_app.detect_airfoil_type import detect_airfoil_type
-
-
 from picture_sim_app.live_simulation import run_julia_simulation_script
 from picture_sim_app.pixel_body_python import PixelBodyMask
+from symlink_utils import ensure_link, safe_unlink_windows
 
 # OS-specific imports (some features did not work as expected on a Windows device and required tweaks. In the future
 # it would be better to merge the two implementations into one, but due to time constraints there are two parallel
@@ -21,8 +20,8 @@ IS_WINDOWS = platform.system() == "Windows"
 # TODO: Merge the two implementations into one
 if IS_WINDOWS:
     from picture_sim_app.image_utils_windows import (
-        capture_image,
-    )
+        capture_image, stop_display_processes,
+)
 else:
     from picture_sim_app.image_utils import (
         capture_image,
@@ -37,39 +36,7 @@ INPUT_FOLDER = SCRIPT_DIR / "input"
 OUTPUT_FOLDER = SCRIPT_DIR / "output"
 OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
 
-
-def ensure_link(src: Path, dst: Path):
-    """
-    Create a symlink to src at dst. On Windows without privilege, fall back to hardlink or copy.
-    """
-    if dst.exists() or dst.is_symlink():
-        try:
-            dst.unlink()
-        except Exception:
-            pass
-    try:
-        dst.symlink_to(src)
-        print(f"[link] symlink created: {dst} -> {src}")
-        return
-    except OSError as e:
-        if getattr(e, "winerror", None) == 1314:
-            print(f"[link] Symlink privilege missing (1314). Falling back to hardlink/copy.")
-        else:
-            print(f"[link] Symlink failed ({e}). Trying hardlink/copy.")
-    # Hardlink attempt
-    try:
-        os.link(src, dst)
-        print(f"[link] hardlink created: {dst} -> {src}")
-        return
-    except OSError as e:
-        print(f"[link] Hardlink failed ({e}). Copying file.")
-    # Copy fallback
-    try:
-        shutil.copy2(src, dst)
-        print(f"[link] file copied: {dst} (from {src})")
-    except Exception as e:
-        raise RuntimeError(f"Failed to create link or copy from {src} to {dst}: {e}")
-
+CAMERA_INDEX = 1
 
 def run_simulation(settings):
     """Run one complete simulation cycle."""
@@ -80,6 +47,7 @@ def run_simulation(settings):
         selection_box_mode=True,  # Click-and-drag selection box
         # fixed_size=(800, 600),    # Alternative: exact pixel dimensions
         use_cached_box=True,  # Fixed typo: was use_chached_box
+        camera_index=CAMERA_INDEX,
     )
 
     # File I/O paths
@@ -182,17 +150,29 @@ def run_simulation(settings):
         # Overwrite the output paths to the found files (use symlink instead of copying)
         symlink_particle = OUTPUT_FOLDER / "particleplot.gif"
         symlink_heatmap_vorticity = OUTPUT_FOLDER / "heatmap_vorticity.gif"
-
         symlink_heatmap_pressure = OUTPUT_FOLDER / "heatmap_pressure.gif"
 
-        # Remove existing symlinks/files if they exist
-        if symlink_particle.exists() or symlink_particle.is_symlink():
-            symlink_particle.unlink()
-        if symlink_heatmap_vorticity.exists() or symlink_heatmap_vorticity.is_symlink():
-            symlink_heatmap_vorticity.unlink()
+        # If device is Windows, the persistent_gif_display cannot be updated without closing (at least not without
+        # overwriting admin permission rights), so we need to stop and restart it.
+        if IS_WINDOWS:
+            # Stop display processes to release files
+            print("Stopping display processes to update symlinks...")
+            stop_display_processes()
+            time.sleep(1)  # Give processes time to fully stop
 
-        if symlink_heatmap_pressure.exists() or symlink_heatmap_pressure.is_symlink():
-            symlink_heatmap_pressure.unlink()
+            # Remove existing symlinks/files if they exist (should work now)
+            safe_unlink_windows(symlink_particle)
+            safe_unlink_windows(symlink_heatmap_vorticity)
+            safe_unlink_windows(symlink_heatmap_pressure)
+        else:
+            # Remove existing symlinks/files if they exist
+            if symlink_particle.exists() or symlink_particle.is_symlink():
+                symlink_particle.unlink()
+            if symlink_heatmap_vorticity.exists() or symlink_heatmap_vorticity.is_symlink():
+                symlink_heatmap_vorticity.unlink()
+
+            if symlink_heatmap_pressure.exists() or symlink_heatmap_pressure.is_symlink():
+                symlink_heatmap_pressure.unlink()
 
         # Create new symlinks pointing to the batch_runs files
         ensure_link(output_path_particle_plot, symlink_particle)
@@ -223,6 +203,7 @@ def main() -> None:
         fixed_aspect_ratio=tuple(settings["capture_image_aspect_ratio"]),
         selection_box_mode=True,
         use_cached_box=False,  # Interactive selection for first run
+        camera_index=CAMERA_INDEX,
     )
 
     # Run first simulation
@@ -247,6 +228,7 @@ def main() -> None:
                 fixed_aspect_ratio=tuple(settings["capture_image_aspect_ratio"]),
                 selection_box_mode=True,
                 use_cached_box=False,  # Force interactive selection
+                camera_index=CAMERA_INDEX,
             )
             # Reload settings and run simulation with new box
             with open(SCRIPT_DIR / "configs/settings.yaml", "r") as f:
