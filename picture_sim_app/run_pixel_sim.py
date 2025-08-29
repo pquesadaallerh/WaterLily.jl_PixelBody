@@ -170,7 +170,6 @@ def run_simulation(settings):
                 symlink_particle.unlink()
             if symlink_heatmap_vorticity.exists() or symlink_heatmap_vorticity.is_symlink():
                 symlink_heatmap_vorticity.unlink()
-
             if symlink_heatmap_pressure.exists() or symlink_heatmap_pressure.is_symlink():
                 symlink_heatmap_pressure.unlink()
 
