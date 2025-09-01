@@ -613,6 +613,9 @@ def start_display_process(script_dir: Path, monitor_index=1, use_qt_version=True
         else:
             script_path = script_dir / "persistent_gif_display" / "persistent_gif_display.py"
 
+        if not os.path.exists(script_path):
+            raise FileNotFoundError
+
         # Start the process in the background
         proc = subprocess.Popen([
             "python", str(script_path), str(monitor_index)
