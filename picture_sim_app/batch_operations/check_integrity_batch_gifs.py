@@ -12,7 +12,7 @@ INPUT_AIRFOIL_IMAGES = [
 "input_naca_030.png",
 ]
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+SCRIPT_DIR = Path(__file__).resolve().parent.parent
 BATCH_RUNS_DIR = SCRIPT_DIR / "output" / "batch_runs"
 
 # Define path to output folder

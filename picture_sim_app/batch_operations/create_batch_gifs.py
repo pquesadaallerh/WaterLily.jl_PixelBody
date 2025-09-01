@@ -1,5 +1,3 @@
-import subprocess
-import sys
 from pathlib import Path
 import logging
 from tqdm import tqdm
@@ -24,7 +22,7 @@ INPUT_AIRFOIL_IMAGES = [
 ]
 
 # Define absolute path to the script directory
-SCRIPT_DIR = Path(__file__).resolve().parent
+SCRIPT_DIR = Path(__file__).resolve().parent.parent
 
 # Define paths to input and output folders
 INPUT_FOLDER = SCRIPT_DIR / "input"
