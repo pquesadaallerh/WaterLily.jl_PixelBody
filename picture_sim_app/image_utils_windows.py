@@ -607,11 +607,11 @@ def start_display_process(script_dir: Path, monitor_index=1, use_qt_version=True
     try:
         if use_qt_version:
             if flip_90_degrees:
-                script_path = script_dir / "persistent_gif_display_90_deg.py"
+                script_path = script_dir / "persistent_gif_display" / "persistent_gif_display_90_deg.py"
             else:
-                script_path = script_dir / "persistent_gif_display_2.py"
+                script_path = script_dir / "persistent_gif_display" / "persistent_gif_display_2.py"
         else:
-            script_path = script_dir / "persistent_gif_display.py"
+            script_path = script_dir / "persistent_gif_display" / "persistent_gif_display.py"
 
         # Start the process in the background
         proc = subprocess.Popen([

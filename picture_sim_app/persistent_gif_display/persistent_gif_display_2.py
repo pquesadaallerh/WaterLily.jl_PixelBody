@@ -3,11 +3,11 @@ import os
 import json
 from pathlib import Path
 
-from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QHBoxLayout, QVBoxLayout, QDesktopWidget
-from PyQt5.QtGui import QMovie, QFont, QTransform
+from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QHBoxLayout, QDesktopWidget
+from PyQt5.QtGui import QMovie, QFont
 from PyQt5.QtCore import QTimer, Qt
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+SCRIPT_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = SCRIPT_DIR / "output"
 CONFIG_PATH = SCRIPT_DIR / "configs" / "settings.yaml"
 AIRFOIL_DATA_PATH = OUTPUT_DIR / "airfoil_data.json"
@@ -28,7 +28,6 @@ class GifLabel(QLabel):
         self.real_target = None
         self.setAlignment(Qt.AlignCenter)  # center the GIF
         self.setScaledContents(False)  # Don't scale contents, we'll handle it manually
-        self.rotation_angle = 90  # 90 degrees clockwise rotation
         self.load_movie()
 
     def load_movie(self):
@@ -47,20 +46,12 @@ class GifLabel(QLabel):
                 print(f"Failed to load: {self.symlink_path}")
 
     def _scale_movie(self):
-        """Scale movie preserving aspect ratio with rotation"""
+        """Scale movie preserving aspect ratio"""
         if hasattr(self, 'movie') and self.movie:
             # Get original size
             original_size = self.movie.frameRect().size()
             if original_size.isEmpty():
                 return
-
-            # For 90-degree rotation, swap width and height for scaling calculation
-            original_width = original_size.width()
-            original_height = original_size.height()
-
-            # After 90-degree rotation, width becomes height and vice versa
-            rotated_width = original_height
-            rotated_height = original_width
 
             # Get available space (leave some margin for safety)
             available_size = self.size()
@@ -68,43 +59,17 @@ class GifLabel(QLabel):
             available_width = max(1, available_size.width() - margin)
             available_height = max(1, available_size.height() - margin)
 
-            # Calculate scaling factor based on rotated dimensions
-            scale_x = available_width / rotated_width
-            scale_y = available_height / rotated_height
+            # Calculate scaling factor to fit while preserving aspect ratio
+            scale_x = available_width / original_size.width()
+            scale_y = available_height / original_size.height()
             scale_factor = min(scale_x, scale_y)  # Use smaller scale to fit entirely
 
-            # Calculate new size (apply to original dimensions, rotation happens during display)
-            new_width = int(original_width * scale_factor)
-            new_height = int(original_height * scale_factor)
+            # Calculate new size
+            new_width = int(original_size.width() * scale_factor)
+            new_height = int(original_size.height() * scale_factor)
 
             from PyQt5.QtCore import QSize
             self.movie.setScaledSize(QSize(new_width, new_height))
-
-    def paintEvent(self, event):
-        """Override paint event to apply rotation"""
-        if hasattr(self, 'movie') and self.movie and self.movie.currentPixmap():
-            from PyQt5.QtGui import QPainter
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.SmoothPixmapTransform)
-
-            # Get the current frame
-            pixmap = self.movie.currentPixmap()
-
-            # Calculate center point for rotation
-            center_x = self.width() // 2
-            center_y = self.height() // 2
-
-            # Set up transformation
-            transform = QTransform()
-            transform.translate(center_x, center_y)
-            transform.rotate(self.rotation_angle)
-            transform.translate(-pixmap.width() // 2, -pixmap.height() // 2)
-
-            painter.setTransform(transform)
-            painter.drawPixmap(0, 0, pixmap)
-        else:
-            # Fallback to default painting if no movie
-            super().paintEvent(event)
 
     def resizeEvent(self, event):
         """Handle resize events to rescale the movie"""
@@ -115,17 +80,16 @@ class GifLabel(QLabel):
         """Check if symlink target changed, reload if needed"""
         self.load_movie()
 
-
 class GifDisplay(QWidget):
     def __init__(self, paths, monitor_index=1):
         super().__init__()
         self.monitor_index = monitor_index
-
+        
         # Main horizontal layout for GIFs (no title space taken)
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
         main_layout.setSpacing(5)
-
+        
         self.labels = []
         for p in paths:
             label = GifLabel(p)
@@ -168,23 +132,23 @@ class GifDisplay(QWidget):
         if airfoil_data:
             airfoil_type = airfoil_data.get('airfoil_type', 'unknown')
             aoa = airfoil_data.get('aoa', 0)
-            airfoil_name = AIRFOIL_NAME_MAPPING[airfoil_type]
-            title_text = f"Airfoil={airfoil_name}, \t Angle of attack={aoa}°"
+            airfoil_name = AIRFOIL_NAME_MAPPING.get(airfoil_type, airfoil_type.upper())
+            title_text = f"Airfoil: {airfoil_name} | AoA: {aoa}°"  # Simplified format
         else:
             title_text = "No airfoil data available"
-
+        
         self.title_label.setText(title_text)
 
     def resizeEvent(self, event):
         """Position the title overlay when window is resized"""
         super().resizeEvent(event)
         # Position title at top center with wider sizing for full text visibility
-        title_width = min(1400, self.width() + 100)  # Increased max width, smaller margin
+        title_width = min(1200, self.width()+100)  # Increased max width, smaller margin
         title_height = 100  # Adequate height for text
         x = (self.width() - title_width) // 2
         y = 10  # Closer to top
         self.title_label.setGeometry(x, y, title_width, title_height)
-
+        
         # Ensure title stays on top after resize
         self.title_label.raise_()
 
@@ -193,24 +157,25 @@ class GifDisplay(QWidget):
             label.check_update()
         # Also update title in case airfoil data changed
         self.update_title()
+        # Ensure title stays visible
+        self.title_label.raise_()
 
     def show_on_monitor(self):
         """Show the window on the specified monitor"""
         desktop = QDesktopWidget()
         screen_count = desktop.screenCount()
-
+        
         if self.monitor_index >= screen_count:
             print(f"Monitor {self.monitor_index} not available, using primary monitor")
             self.monitor_index = 0
-
+        
         screen_geometry = desktop.screenGeometry(self.monitor_index)
         print(f"Displaying on monitor {self.monitor_index} ({screen_geometry.width()}x{screen_geometry.height()})")
-
+        
         # Move window to the specified monitor
         self.move(screen_geometry.x(), screen_geometry.y())
         self.resize(screen_geometry.width(), screen_geometry.height())
         self.showFullScreen()
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
@@ -223,7 +188,7 @@ if __name__ == "__main__":
         except ValueError:
             print("Invalid monitor index, using default (1)")
 
-    # replace with your symlink paths
+    # replace with symlink paths
     symlinks = [GIF_LEFT.__str__(), GIF_RIGHT.__str__()]
 
     w = GifDisplay(symlinks, monitor_index)

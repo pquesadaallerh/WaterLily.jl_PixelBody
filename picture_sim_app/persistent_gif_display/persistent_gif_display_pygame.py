@@ -3,9 +3,9 @@ import sys
 import time
 import threading
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Optional
 
-import yaml  # <-- added
+import yaml
 
 try:
     from watchdog.observers import Observer
@@ -17,9 +17,9 @@ except ImportError:
 import pygame
 from PIL import Image, ImageSequence
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+SCRIPT_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = SCRIPT_DIR / "output"
-CONFIG_PATH = SCRIPT_DIR / "configs" / "settings.yaml"  # <-- added
+CONFIG_PATH = SCRIPT_DIR / "configs" / "settings.yaml"
 GIF_LEFT = OUTPUT_DIR / "particleplot.gif"
 GIF_RIGHT = OUTPUT_DIR / "heatmap_pressure.gif"
 
