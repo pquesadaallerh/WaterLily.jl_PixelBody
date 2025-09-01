@@ -168,6 +168,12 @@ def run_simulation(settings):
             safe_unlink_windows(symlink_heatmap_vorticity)
             safe_unlink_windows(symlink_heatmap_pressure)
 
+            # Create new symlinks pointing to the batch_runs files
+            ensure_link(output_path_particle_plot, symlink_particle)
+            ensure_link(output_path_heatmap_vorticity, symlink_heatmap_vorticity)
+            ensure_link(output_path_heatmap_pressure, symlink_heatmap_pressure)
+
+
             # Restart display process
             print("Restarting display process...")
             restart_display_process(
@@ -186,10 +192,10 @@ def run_simulation(settings):
             if symlink_heatmap_pressure.exists() or symlink_heatmap_pressure.is_symlink():
                 symlink_heatmap_pressure.unlink()
 
-        # Create new symlinks pointing to the batch_runs files
-        ensure_link(output_path_particle_plot, symlink_particle)
-        ensure_link(output_path_heatmap_vorticity, symlink_heatmap_vorticity)
-        ensure_link(output_path_heatmap_pressure, symlink_heatmap_pressure)
+            # Create new symlinks pointing to the batch_runs files
+            ensure_link(output_path_particle_plot, symlink_particle)
+            ensure_link(output_path_heatmap_vorticity, symlink_heatmap_vorticity)
+            ensure_link(output_path_heatmap_pressure, symlink_heatmap_pressure)
 
     # Save airfoil data to JSON (use actual AoA, not rounded)
     airfoil_data = {
